@@ -5,8 +5,8 @@ import (
 	"os/exec"
 	"strings"
 
-	git "github.com/libgit2/git2go"
 	"github.com/orivej/e"
+	git "github.com/orivej/git2go"
 )
 
 type CommitWalker interface {
