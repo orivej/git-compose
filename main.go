@@ -237,12 +237,9 @@ func main() {
 		progress.Stop()
 	}
 
-	log.Printf("composed %d branch(es)", len(newHeads))
 	for headName, commit := range newHeads {
 		_, err = repo.References.Create("refs/heads/"+headName, commit.Id(), true, "")
 		e.Exit(err)
-		fmt.Println(headName, "→", commit.Id())
 	}
-
-	// err = repo.ResetToCommit(newMaster, git.ResetHard, nil)
+	log.Printf("composed %d branch(es)", len(newHeads))
 }
