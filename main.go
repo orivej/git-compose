@@ -130,7 +130,7 @@ func main() {
 		}
 	}
 
-	log.Printf("composing %d sides (%d commits)", nSides, len(commitInfo))
+	log.Printf("composing %s (%s)", plural(nSides, "side"), plural(len(commitInfo), "commit"))
 	tb, err := repo.TreeBuilder()
 	e.Exit(err)
 	emptyTreeOid, err := tb.Write()
@@ -241,5 +241,5 @@ func main() {
 		_, err = repo.References.Create("refs/heads/"+headName, commit.Id(), true, "")
 		e.Exit(err)
 	}
-	log.Printf("composed %d branch(es)", len(newHeads))
+	log.Printf("composed %s", plural(len(newHeads), "branch"))
 }
