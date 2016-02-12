@@ -25,7 +25,7 @@ cd new-repo
 git remote add repo1 https://.../
 git remote add repo2 https://.../
 git remote add repo3 https://.../
-git fetch --all
+git fetch --all -np
 git-compose repo1 repo2 repo3
 git reset --hard
 # ls → repo1/ repo2/ repo3/
