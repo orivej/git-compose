@@ -135,19 +135,27 @@ func main() {
 				roots = append(roots, commit)
 			}
 		}
+		sharedCommitsCount := 0
 		err = walker.Iterate(func(commit *git.Commit) bool {
 			oid := *commit.Id()
-			commitInfo[oid] = CommitInfo{Side: i}
+			if _, ok := commitInfo[oid]; !ok {
+				commitInfo[oid] = CommitInfo{Side: i}
+			} else {
+				sharedCommitsCount++
+			}
 			return true
 		})
 		e.Exit(err)
+		if sharedCommitsCount > 0 {
+			log.Printf("did not change side of %s", plural(sharedCommitsCount, "shared commit"))
+		}
 
 		// Update commitInfo with lists of commit branches.
 		iter, err := repo.NewReferenceIteratorGlob(remoteGlob)
 		e.Exit(err)
 		for {
 			ref, err := iter.Next()
-			if err, ok := err.(*git.GitError); ok && err.Code == git.ErrIterOver {
+			if git.IsErrorCode(err, git.ErrIterOver) {
 				break
 			}
 			e.Exit(err)
