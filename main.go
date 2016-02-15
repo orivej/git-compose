@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/golang/example/stringutil"
 	"github.com/gosuri/uiprogress"
 	"github.com/orivej/e"
 	git "github.com/orivej/git2go"
@@ -21,12 +22,15 @@ type CommitInfo struct {
 
 var (
 	flVerbose = flag.Bool("v", false, "enable verbose logging")
+	flRepoTag = flag.Bool("repo/tag", false, "relate a tag to the repository by the beginning of tag name")
+	flTagRepo = flag.Bool("tag/repo", false, "relate a tag to the repository by the end of tag name")
 )
 
 const usage = `usage : git-compose [<options>] <repository>...
 
-Compose all branches from repositories (URLs, paths, or remote names)
-into a single repository in the current directory.
+Compose all branches from repositories (URLs, paths, or remote names) into a
+single repository in the current directory.  If either -repo/tag or -tag/repo is
+given, also compose and rewrite relevant tags.
 
 `
 
@@ -37,6 +41,10 @@ func main() {
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+	if *flRepoTag && *flTagRepo {
+		fmt.Fprintf(os.Stderr, "-repo/tag is not compatible with -tag/repo")
+		os.Exit(1)
+	}
 	remotePaths := flag.Args()
 	if len(remotePaths) < 1 {
 		flag.Usage()
@@ -44,21 +52,42 @@ func main() {
 	}
 
 	nSides := len(remotePaths)
-	sideNames := make([]string, nSides)
 	commitInfo := make(map[git.Oid]CommitInfo)
 	roots := []*git.Commit{}
+	sideNames := make([]string, nSides)
+	for i, path := range remotePaths {
+		sideNames[i] = filepath.Base(path)
+	}
+	var sideNamesTree *Tree
+	switch {
+	case *flRepoTag:
+		sideNamesTree = StringTree(sideNames)
+	case *flTagRepo:
+		sideNamesTree = StringTree(reverseStrings(sideNames))
+	}
 
 	repo, err := git.InitRepository(".", false)
 	e.Exit(err)
+	tagList, err := repo.Tags.List()
+	e.Exit(err)
+	if *flTagRepo {
+		tagList = reverseStrings(tagList)
+	}
+	var relevantTagList []string
 
 	for i, remotePath := range remotePaths {
 		// Fetch.
 		remotePath, err := filepath.Abs(remotePath)
 		e.Exit(err)
 
-		name := filepath.Base(remotePath)
-		sideNames[i] = name
+		name := sideNames[i]
 		remoteGlob := fmt.Sprint("refs/remotes/", name, "/*")
+		switch {
+		case *flRepoTag:
+			sideNamesTree.Insert(name, true)
+		case *flTagRepo:
+			sideNamesTree.Insert(stringutil.Reverse(name), true)
+		}
 
 		remote, err := repo.Remotes.Lookup(name)
 		if err != nil {
@@ -74,14 +103,38 @@ func main() {
 			err = cmd.Run()
 			e.Exit(err)
 		}
-		// Store commit info.
-		remoteRoots := []*git.Commit{}
 
+		// For each commit to be rewritten, store it side number in commitInfo.
 		log.Printf("walking %q", name)
 		walker, err := repo.Walk()
 		e.Exit(err)
 		err = walker.PushGlob(remoteGlob)
 		e.Exit(err)
+		if *flTagRepo || *flRepoTag {
+			key := name
+			if *flTagRepo {
+				key = stringutil.Reverse(name)
+			}
+			relevantTags := sideNamesTree.FilterStrings(key, tagList)
+			for _, tagName := range relevantTags {
+				if *flTagRepo {
+					tagName = stringutil.Reverse(tagName)
+				}
+				ref, err := repo.References.Lookup("refs/tags/" + tagName)
+				e.Exit(err)
+				obj, err := ref.Peel(git.ObjectCommit)
+				if err != nil {
+					// Ignore tags that do not point to commits.
+					continue
+				}
+				relevantTagList = append(relevantTagList, tagName)
+				walker.Push(obj.Id())
+				// Add the tag to the list of roots for rewrite.
+				commit, err := repo.LookupCommit(obj.Id())
+				e.Exit(err)
+				roots = append(roots, commit)
+			}
+		}
 		err = walker.Iterate(func(commit *git.Commit) bool {
 			oid := *commit.Id()
 			commitInfo[oid] = CommitInfo{Side: i}
@@ -89,6 +142,7 @@ func main() {
 		})
 		e.Exit(err)
 
+		// Update commitInfo with lists of commit branches.
 		iter, err := repo.NewReferenceIteratorGlob(remoteGlob)
 		e.Exit(err)
 		for {
@@ -101,7 +155,6 @@ func main() {
 			refCommit, err := repo.LookupCommit(ref.Target())
 			e.Exit(err)
 			roots = append(roots, refCommit)
-			remoteRoots = append(remoteRoots, refCommit)
 			// Store commit branches.
 			branchName, err := ref.Branch().Name()
 			e.Exit(err)
@@ -241,5 +294,47 @@ func main() {
 		_, err = repo.References.Create("refs/heads/"+headName, commit.Id(), true, "")
 		e.Exit(err)
 	}
-	log.Printf("composed %s", plural(len(newHeads), "branch"))
+	rewrittenTagsCount := 0
+	for {
+		// This loop supports rewriting tags of tags...
+		rewrittenTags := false
+		for _, tagName := range relevantTagList {
+			ref, err := repo.References.Lookup("refs/tags/" + tagName)
+			e.Exit(err)
+			oldOid := *ref.Target()
+			if newOid, ok := filterMapping[oldOid]; ok {
+				// Lightweight tag pointing to a rewritten commit.
+				commit, err := repo.LookupCommit(&newOid)
+				e.Exit(err)
+				_, err = repo.Tags.CreateLightweight(tagName, commit, true)
+				e.Exit(err)
+				rewrittenTags = true
+				rewrittenTagsCount++
+				if *flVerbose {
+					fmt.Println("rewritten lightweight tag", tagName, &oldOid, "→", &newOid)
+				}
+			}
+			tag, err := repo.LookupTag(&oldOid)
+			if err == nil {
+				// Annotated tag.
+				oldOid = *tag.Target().Id()
+				if newOid, ok := filterMapping[oldOid]; ok {
+					commit, err := repo.LookupCommit(&newOid)
+					e.Exit(err)
+					// Currently git2go does not support overwriting annotated tags.
+					_, err = repo.Tags.Create(tagName, commit, tag.Tagger(), tag.Message(), true)
+					e.Exit(err)
+					rewrittenTags = true
+					rewrittenTagsCount++
+					if *flVerbose {
+						fmt.Println("rewritten annotated tag", tagName, &oldOid, "→", &newOid)
+					}
+				}
+			}
+		}
+		if !rewrittenTags {
+			break
+		}
+	}
+	log.Printf("composed %s, rewritten %s", plural(len(newHeads), "branch"), plural(rewrittenTagsCount, "tag"))
 }
