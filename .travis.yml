@@ -1,0 +1,11 @@
+language: go
+
+go:
+  - 1.4
+  - 1.5
+  - 1.6
+
+install:
+  - go get -t -d -v ./...
+  - go generate github.com/orivej/git2go
+  - go get
