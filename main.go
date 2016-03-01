@@ -29,11 +29,11 @@ type Mode int
 
 const (
 	NoMode Mode = iota
-	CompleteMode
+	TotalMode
 	FinalMode
 )
 
-var modes = map[string]Mode{"complete": CompleteMode, "final": FinalMode}
+var modes = map[string]Mode{"total": TotalMode, "final": FinalMode}
 
 var (
 	flVerbose = flag.Bool("v", false, "enable verbose logging")
@@ -41,7 +41,7 @@ var (
 	flTagRepo = flag.Bool("tag/repo", false, "relate a tag to the repository by the end of tag name")
 	flMode    = flag.String("mode", "final", `composition mode:
         * final :: merge branches with a final merge commit
-        * complete :: interspose commits on all branches (does not work correctly)`)
+        * total :: interspose commits on all branches (does not work correctly)`)
 	flInterpose = flag.String("interpose", "", `in final mode, interpose rather than merge the specified branch`)
 )
 
@@ -209,7 +209,7 @@ func main() {
 				oid := *commit.Id()
 				ci := commitInfo[oid]
 				ci.Branches = append(ci.Branches, branchName)
-				if mode == CompleteMode && branchName == "master" {
+				if mode == TotalMode && branchName == "master" {
 					// Reduce risk of missing sibling trees
 					// with our strategy that takes them
 					// from the first parent by making
