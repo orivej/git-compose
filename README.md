@@ -1,4 +1,4 @@
-git-compose unites multiple git repositories in subdirectories of a new one, rewriting history as if they always were together.
+git-compose unites multiple git repositories in subdirectories of a new one, facilitating future merges.
 
 Installation
 ============
@@ -18,7 +18,7 @@ go get -u -v github.com/orivej/git-compose
 Usage example
 =============
 
-For each remote branch, git-compose will create a local one with combined history.
+For each remote branch, git-compose will create a local one with combined history, moving data into a subdirectory with the name of the remote.  In the default "final" mode, it will do so by merging rewritten branches together in the end.  In the "complete" mode that does not work correctly, it will attempt to rewrite history as if repositories were always developed together.
 
 ```bash
 git init new-repo
