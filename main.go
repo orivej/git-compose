@@ -40,8 +40,9 @@ var (
 	flRepoTag = flag.Bool("repo/tag", false, "relate a tag to the repository by the beginning of tag name")
 	flTagRepo = flag.Bool("tag/repo", false, "relate a tag to the repository by the end of tag name")
 	flMode    = flag.String("mode", "final", `composition mode:
-        * final :: interspose commits only on "master", merge other branches with final merge commits
-        * complete :: interspose commits on all branches (does not work correctly yet)`)
+        * final :: merge branches with a final merge commit
+        * complete :: interspose commits on all branches (does not work correctly)`)
+	flInterpose = flag.String("interpose", "", `in final mode, interpose rather than merge the specified branch`)
 )
 
 const usage = `usage : git-compose [<options>] <repository>...
@@ -191,7 +192,7 @@ func main() {
 			branchName, err := ref.Branch().Name()
 			e.Exit(err)
 			branchName = strings.TrimPrefix(branchName, name+"/")
-			if mode == FinalMode && branchName != "master" {
+			if mode == FinalMode && branchName != *flInterpose {
 				// Add branches other than "master" for final merge.
 				finalBranchInfo[branchName] = append(finalBranchInfo[branchName], BranchInfo{
 					Side:   i,
@@ -356,7 +357,7 @@ func main() {
 		e.Exit(err)
 		newTree, err := repo.LookupTree(newTreeID)
 		e.Exit(err)
-		message := fmt.Sprintf("Merge branch '%s' from %s", branchName, strings.Join(parentNames, ", "))
+		message := fmt.Sprintf("Compose branch '%s' from %s", branchName, strings.Join(parentNames, ", "))
 		commitID, err := repo.CreateCommit("", sig, sig, message, newTree, parents...)
 		e.Exit(err)
 		_, err = repo.References.Create("refs/heads/"+branchName, commitID, true, "")
@@ -410,8 +411,8 @@ func main() {
 			break
 		}
 	}
-	log.Printf("interposed %s, merged %s, rewritten %s",
-		plural(len(newHeads), "branch"),
+	log.Printf("merged %s, interposed %s, rewritten %s",
 		plural(len(finalBranchInfo), "branch"),
+		plural(len(newHeads), "branch"),
 		plural(rewrittenTagsCount, "tag"))
 }
