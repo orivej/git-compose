@@ -337,29 +337,37 @@ func main() {
 	e.Exit(err)
 	for branchName, branchInfos := range finalBranchInfo {
 		nParents := len(branchInfos)
-		parents := make([]*git.Commit, nParents)
-		parentNames := make([]string, nParents)
-		tb, err := repo.TreeBuilder()
-		e.Exit(err)
-		for k, branchInfo := range branchInfos {
-			parentOid := filterMapping[*branchInfo.Commit.Id()]
-			parentCommit, err := repo.LookupCommit(&parentOid)
+		var commitID *git.Oid
+		if nParents == 1 {
+			oldOid := filterMapping[*branchInfos[0].Commit.Id()]
+			commit, err := repo.LookupCommit(&oldOid)
 			e.Exit(err)
-			parents[k] = parentCommit
-			name := sideNames[branchInfo.Side]
-			parentNames[k] = name
-			oldTree, err := branchInfo.Commit.Tree()
+			commitID = commit.Id()
+		} else {
+			parents := make([]*git.Commit, nParents)
+			parentNames := make([]string, nParents)
+			tb, err := repo.TreeBuilder()
 			e.Exit(err)
-			err = tb.Insert(name, oldTree.Id(), int(git.FilemodeTree))
+			for k, branchInfo := range branchInfos {
+				parentOid := filterMapping[*branchInfo.Commit.Id()]
+				parentCommit, err := repo.LookupCommit(&parentOid)
+				e.Exit(err)
+				parents[k] = parentCommit
+				name := sideNames[branchInfo.Side]
+				parentNames[k] = name
+				oldTree, err := branchInfo.Commit.Tree()
+				e.Exit(err)
+				err = tb.Insert(name, oldTree.Id(), int(git.FilemodeTree))
+				e.Exit(err)
+			}
+			newTreeID, err := tb.Write()
+			e.Exit(err)
+			newTree, err := repo.LookupTree(newTreeID)
+			e.Exit(err)
+			message := fmt.Sprintf("Compose branch '%s' from %s", branchName, strings.Join(parentNames, ", "))
+			commitID, err = repo.CreateCommit("", sig, sig, message, newTree, parents...)
 			e.Exit(err)
 		}
-		newTreeID, err := tb.Write()
-		e.Exit(err)
-		newTree, err := repo.LookupTree(newTreeID)
-		e.Exit(err)
-		message := fmt.Sprintf("Compose branch '%s' from %s", branchName, strings.Join(parentNames, ", "))
-		commitID, err := repo.CreateCommit("", sig, sig, message, newTree, parents...)
-		e.Exit(err)
 		_, err = repo.References.Create("refs/heads/"+branchName, commitID, true, "")
 		e.Exit(err)
 	}
