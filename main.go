@@ -20,10 +20,28 @@ type CommitInfo struct {
 	Branches []string // Short names of branches containing this commit.
 }
 
+type BranchInfo struct {
+	Side   int
+	Commit *git.Commit
+}
+
+type Mode int
+
+const (
+	NoMode Mode = iota
+	CompleteMode
+	FinalMode
+)
+
+var modes = map[string]Mode{"complete": CompleteMode, "final": FinalMode}
+
 var (
 	flVerbose = flag.Bool("v", false, "enable verbose logging")
 	flRepoTag = flag.Bool("repo/tag", false, "relate a tag to the repository by the beginning of tag name")
 	flTagRepo = flag.Bool("tag/repo", false, "relate a tag to the repository by the end of tag name")
+	flMode    = flag.String("mode", "final", `composition mode:
+        * final :: interspose commits only on "master", merge other branches with final merge commits
+        * complete :: interspose commits on all branches (does not work correctly yet)`)
 )
 
 const usage = `usage : git-compose [<options>] <repository>...
@@ -42,7 +60,12 @@ func main() {
 	}
 	flag.Parse()
 	if *flRepoTag && *flTagRepo {
-		fmt.Fprintf(os.Stderr, "-repo/tag is not compatible with -tag/repo")
+		fmt.Fprintln(os.Stderr, "-repo/tag is not compatible with -tag/repo")
+		os.Exit(1)
+	}
+	mode := modes[*flMode]
+	if mode == NoMode {
+		fmt.Fprintln(os.Stderr, "Unknown mode: ", *flMode)
 		os.Exit(1)
 	}
 	remotePaths := flag.Args()
@@ -53,6 +76,7 @@ func main() {
 
 	nSides := len(remotePaths)
 	commitInfo := make(map[git.Oid]CommitInfo)
+	finalBranchInfo := make(map[string][]BranchInfo)
 	roots := []*git.Commit{}
 	sideNames := make([]string, nSides)
 	for i, path := range remotePaths {
@@ -167,6 +191,15 @@ func main() {
 			branchName, err := ref.Branch().Name()
 			e.Exit(err)
 			branchName = strings.TrimPrefix(branchName, name+"/")
+			if mode == FinalMode && branchName != "master" {
+				// Add branches other than "master" for final merge.
+				finalBranchInfo[branchName] = append(finalBranchInfo[branchName], BranchInfo{
+					Side:   i,
+					Commit: refCommit,
+				})
+				// Skip interposing.
+				continue
+			}
 			walker.Reset()
 			err = walker.Push(ref.Target())
 			e.Exit(err)
@@ -175,7 +208,7 @@ func main() {
 				oid := *commit.Id()
 				ci := commitInfo[oid]
 				ci.Branches = append(ci.Branches, branchName)
-				if branchName == "master" {
+				if mode == CompleteMode && branchName == "master" {
 					// Reduce risk of missing sibling trees
 					// with our strategy that takes them
 					// from the first parent by making
@@ -205,8 +238,8 @@ func main() {
 		log.Println("virtual common head:", composedOid)
 	}
 
-	filterMapping := make(map[git.Oid]git.Oid)
-	newHeads := make(map[string]*git.Commit)
+	filterMapping := make(map[git.Oid]git.Oid) // Map old commits to new commits.
+	newHeads := make(map[string]*git.Commit)   // Map new heads to new commits.
 
 	var progress *uiprogress.Progress
 	var bar *uiprogress.Bar
@@ -247,8 +280,8 @@ func main() {
 		// Translate old parents.
 		for i := useParentsFrom; i < commit.ParentCount(); i++ {
 			oldParentOid := commit.Parent(uint(i)).Id()
-			newParentOid := filterMapping[*oldParentOid]
-			newParent, err := repo.LookupCommit(&newParentOid)
+			parentOid := filterMapping[*oldParentOid]
+			newParent, err := repo.LookupCommit(&parentOid)
 			if err != nil {
 				e.Exit(fmt.Errorf("Error: %v parent %v in %q was not mapped yet", &oid, oldParentOid, sideNames[ci.Side]))
 			}
@@ -269,9 +302,9 @@ func main() {
 		e.Exit(err)
 		err = tb.Insert(sideNames[ci.Side], tree.Id(), int(git.FilemodeTree))
 		e.Exit(err)
-		newTreeId, err := tb.Write()
+		newTreeID, err := tb.Write()
 		e.Exit(err)
-		newTree, err := repo.LookupTree(newTreeId)
+		newTree, err := repo.LookupTree(newTreeID)
 		e.Exit(err)
 		// Commit.
 		newOid, err := repo.CreateCommit("", commit.Author(), commit.Committer(), commit.Message(), newTree, parents...)
@@ -298,10 +331,43 @@ func main() {
 		progress.Stop()
 	}
 
+	// Create finally-merged branches.
+	sig, err = repo.DefaultSignature()
+	e.Exit(err)
+	for branchName, branchInfos := range finalBranchInfo {
+		nParents := len(branchInfos)
+		parents := make([]*git.Commit, nParents)
+		parentNames := make([]string, nParents)
+		tb, err := repo.TreeBuilder()
+		e.Exit(err)
+		for k, branchInfo := range branchInfos {
+			parentOid := filterMapping[*branchInfo.Commit.Id()]
+			parentCommit, err := repo.LookupCommit(&parentOid)
+			e.Exit(err)
+			parents[k] = parentCommit
+			name := sideNames[branchInfo.Side]
+			parentNames[k] = name
+			oldTree, err := branchInfo.Commit.Tree()
+			e.Exit(err)
+			err = tb.Insert(name, oldTree.Id(), int(git.FilemodeTree))
+			e.Exit(err)
+		}
+		newTreeID, err := tb.Write()
+		e.Exit(err)
+		newTree, err := repo.LookupTree(newTreeID)
+		e.Exit(err)
+		message := fmt.Sprintf("Merge branch '%s' from %s", branchName, strings.Join(parentNames, ", "))
+		commitID, err := repo.CreateCommit("", sig, sig, message, newTree, parents...)
+		e.Exit(err)
+		_, err = repo.References.Create("refs/heads/"+branchName, commitID, true, "")
+		e.Exit(err)
+	}
+	// Create heads for interposed branches.
 	for headName, commit := range newHeads {
 		_, err = repo.References.Create("refs/heads/"+headName, commit.Id(), true, "")
 		e.Exit(err)
 	}
+	// Create tags.
 	rewrittenTagsCount := 0
 	for {
 		// This loop supports rewriting tags of tags...
@@ -344,5 +410,8 @@ func main() {
 			break
 		}
 	}
-	log.Printf("composed %s, rewritten %s", plural(len(newHeads), "branch"), plural(rewrittenTagsCount, "tag"))
+	log.Printf("interposed %s, merged %s, rewritten %s",
+		plural(len(newHeads), "branch"),
+		plural(len(finalBranchInfo), "branch"),
+		plural(rewrittenTagsCount, "tag"))
 }
